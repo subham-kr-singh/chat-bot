@@ -1,184 +1,182 @@
-/* ══════════════════════════════════════════════════════
-   CareerBot — Frontend JavaScript
-   B.Tech CSE Career Guidance Chatbot
-   ══════════════════════════════════════════════════════ */
+/* ────────────────────────────────────────────────────────
+   CareerPath AI — Frontend Script
+   WebSocket streaming + Gemini markdown renderer
+──────────────────────────────────────────────────────── */
 
-'use strict';
+// ── Config ──────────────────────────────────────────────
+const CONFIG = {
+  WS_URL:  `ws://${location.hostname}:5000`,
+  API_URL: `http://${location.hostname}:5000/api`
+};
 
-// ─── Configuration ────────────────────────────────────
-const API_BASE   = 'http://localhost:5000/api';
-const SESSION_ID = 'session_' + (localStorage.getItem('careerbotSessionId') || generateSessionId());
+// ── State ───────────────────────────────────────────────
+let ws = null;
+let isStreaming = false;
+let reconnectTimer = null;
+let overlay = null;
 
-function generateSessionId() {
-  const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  localStorage.setItem('careerbotSessionId', id);
-  return id;
+// ── DOM Refs ─────────────────────────────────────────────
+const chatWindow    = document.getElementById('chatWindow');
+const messagesEl    = document.getElementById('messages');
+const welcomeScreen = document.getElementById('welcomeScreen');
+const userInput     = document.getElementById('userInput');
+const sendBtn       = document.getElementById('sendBtn');
+const clearBtn      = document.getElementById('clearBtn');
+const statusDot     = document.getElementById('statusDot');
+const dotEl         = statusDot.querySelector('.dot');
+const statusText    = statusDot.querySelector('.status-text');
+const toast         = document.getElementById('toast');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const menuBtn       = document.getElementById('menuBtn');
+const sidebar       = document.getElementById('sidebar');
+
+// ── WebSocket ────────────────────────────────────────────
+function connectWS() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  setStatus('connecting');
+  ws = new WebSocket(CONFIG.WS_URL);
+
+  ws.onopen = () => {
+    setStatus('connected');
+    clearTimeout(reconnectTimer);
+    loadHistory();
+  };
+
+  ws.onclose = () => {
+    setStatus('error');
+    reconnectTimer = setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => setStatus('error');
+
+  ws.onmessage = (event) => handleWSMessage(JSON.parse(event.data));
 }
 
-// ─── DOM References ───────────────────────────────────
-const chatArea         = document.getElementById('chatArea');
-const welcomeScreen    = document.getElementById('welcomeScreen');
-const messagesContainer = document.getElementById('messagesContainer');
-const userInput        = document.getElementById('userInput');
-const sendBtn          = document.getElementById('sendBtn');
-const newChatBtn       = document.getElementById('newChatBtn');
-const clearChatBtn     = document.getElementById('clearChatBtn');
-const menuToggle       = document.getElementById('menuToggle');
-const sidebar          = document.getElementById('sidebar');
-const sidebarOverlay   = document.getElementById('sidebarOverlay');
-const statusDot        = document.getElementById('statusDot');
-const connectionStatus = document.getElementById('connectionStatus');
-const toast            = document.getElementById('toast');
-
-// ─── State ────────────────────────────────────────────
-let isLoading = false;
-
-// ══════════════════════════════════════════════════════
-// INITIALIZATION
-// ══════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', () => {
-  checkAPIHealth();
-  loadChatHistory();
-  bindEvents();
-});
-
-// ─── Bind All Event Listeners ─────────────────────────
-function bindEvents() {
-  // Send on button click
-  sendBtn.addEventListener('click', handleSend);
-
-  // Send on Enter (Shift+Enter = newline)
-  userInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  });
-
-  // Auto-grow textarea and toggle send button
-  userInput.addEventListener('input', () => {
-    autoGrow(userInput);
-    sendBtn.disabled = userInput.value.trim() === '' || isLoading;
-  });
-
-  // New Chat
-  newChatBtn.addEventListener('click', () => {
-    startNewChat();
-    closeSidebar();
-  });
-
-  // Clear History
-  clearChatBtn.addEventListener('click', () => confirmClearHistory());
-
-  // Mobile sidebar
-  menuToggle.addEventListener('click', () => {
-    sidebar.classList.toggle('open');
-    sidebarOverlay.classList.toggle('open');
-  });
-  sidebarOverlay.addEventListener('click', closeSidebar);
-
-  // Suggestion cards (welcome screen)
-  document.querySelectorAll('.suggestion-card, .topic-btn').forEach((el) => {
-    el.addEventListener('click', () => {
-      const prompt = el.dataset.prompt;
-      if (prompt) {
-        userInput.value = prompt;
-        autoGrow(userInput);
-        sendBtn.disabled = false;
-        closeSidebar();
-        handleSend();
-      }
-    });
-  });
+function handleWSMessage(data) {
+  switch (data.type) {
+    case 'start':
+      onStreamStart();
+      break;
+    case 'chunk':
+      onStreamChunk(data.content);
+      break;
+    case 'done':
+      onStreamDone();
+      break;
+    case 'error':
+      onStreamError(data.message);
+      break;
+  }
 }
 
-// ──────────────────────────────────────────────────────
-// SEND MESSAGE FLOW
-// ──────────────────────────────────────────────────────
-async function handleSend() {
-  const text = userInput.value.trim();
-  if (!text || isLoading) return;
+// ── WebSocket Events ──────────────────────────────────────
+let currentBotBubble = null;
+let currentBotRaw    = '';
 
-  // Clear input immediately
-  userInput.value = '';
-  autoGrow(userInput);
+function onStreamStart() {
+  isStreaming = true;
   sendBtn.disabled = true;
 
-  // Show chat area, hide welcome
-  showChatArea();
+  // Create bot message with typing animation
+  const msgEl = createMessageEl('bot');
+  const bubble = msgEl.querySelector('.msg-bubble');
+  bubble.innerHTML = `
+    <div class="typing-indicator">
+      <span></span><span></span><span></span>
+    </div>`;
+  messagesEl.appendChild(msgEl);
+  scrollBottom();
 
-  // Render user message
-  appendMessage('user', text);
-
-  // Show typing indicator
-  const typingEl = appendTypingIndicator();
-
-  isLoading = true;
-
-  try {
-    const data = await sendChatRequest(text);
-    typingEl.remove();
-    appendMessage('ai', data.reply);
-  } catch (err) {
-    const errorMessage = err.message || 'Could not reach the server.';
-    appendMessage('ai', `⚠️ **Error:** ${errorMessage}`);
-    showToast(errorMessage, 'error');
-  } finally {
-    isLoading = false;
-    sendBtn.disabled = userInput.value.trim() === '';
-    scrollToBottom();
-  }
+  // Save ref for streaming
+  currentBotBubble = bubble;
+  currentBotRaw    = '';
 }
 
-// ─── API: Send Chat ───────────────────────────────────
-async function sendChatRequest(message) {
-  const response = await fetch(`${API_BASE}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId: SESSION_ID }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.details || data.error || `HTTP ${response.status}`);
-  }
-  return data;
+function onStreamChunk(text) {
+  if (!currentBotBubble) return;
+  currentBotRaw += text;
+  currentBotBubble.classList.add('cursor-blink');
+  currentBotBubble.innerHTML = renderMarkdown(currentBotRaw);
+  scrollBottom();
 }
 
-// ─── API: Load Chat History ───────────────────────────
-async function loadChatHistory() {
-  try {
-    const response = await fetch(`${API_BASE}/chat/history?sessionId=${SESSION_ID}&limit=40`);
-    if (!response.ok) return;
+function onStreamDone() {
+  if (currentBotBubble) {
+    currentBotBubble.classList.remove('cursor-blink');
+    currentBotBubble.innerHTML = renderMarkdown(currentBotRaw);
+  }
+  currentBotBubble = null;
+  currentBotRaw    = '';
+  isStreaming      = false;
+  sendBtn.disabled = false;
+  scrollBottom();
+}
 
-    const data = await response.json();
-    if (data.chats && data.chats.length > 0) {
-      showChatArea();
-      data.chats.forEach((chat) => {
-        appendMessage('user', chat.question, new Date(chat.createdAt));
-        appendMessage('ai', chat.answer, new Date(chat.createdAt));
+function onStreamError(msg) {
+  if (currentBotBubble) {
+    currentBotBubble.classList.remove('cursor-blink');
+    currentBotBubble.innerHTML = `<span style="color:var(--danger)">⚠️ ${msg || 'Something went wrong. Please try again.'}</span>`;
+  }
+  currentBotBubble = null;
+  isStreaming      = false;
+  sendBtn.disabled = false;
+  showToast('Failed to get response', 'error');
+}
+
+// ── Send Message ──────────────────────────────────────────
+function sendMessage() {
+  const text = userInput.value.trim();
+  if (!text || isStreaming) return;
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showToast('Reconnecting... please wait', 'error');
+    connectWS();
+    return;
+  }
+
+  // Hide welcome screen on first message
+  if (welcomeScreen) welcomeScreen.style.display = 'none';
+
+  // Render user bubble
+  appendUserMessage(text);
+  userInput.value  = '';
+  userInput.style.height = 'auto';
+
+  // Send to server via WebSocket
+  ws.send(JSON.stringify({ question: text }));
+}
+
+// ── Load History ──────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const res  = await fetch(`${CONFIG.API_URL}/chat/history`);
+    const data = await res.json();
+
+    if (data.success && data.data.length > 0) {
+      if (welcomeScreen) welcomeScreen.style.display = 'none';
+      // Show oldest first
+      const sorted = [...data.data].reverse();
+      sorted.forEach(({ question, answer, createdAt }) => {
+        appendUserMessage(question, createdAt, true);
+        appendBotMessage(answer, createdAt);
       });
-      scrollToBottom(false);
+      scrollBottom();
     }
   } catch (err) {
-    // Silently ignore; backend may not be running yet
     console.warn('Could not load history:', err.message);
   }
 }
 
-// ─── API: Clear History ───────────────────────────────
-async function confirmClearHistory() {
+// ── Clear History ──────────────────────────────────────────
+async function clearHistory() {
   if (!confirm('Clear all chat history? This cannot be undone.')) return;
   try {
-    const response = await fetch(`${API_BASE}/chat/clear`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: SESSION_ID }),
-    });
-    const data = await response.json();
+    const res  = await fetch(`${CONFIG.API_URL}/chat/history`, { method: 'DELETE' });
+    const data = await res.json();
     if (data.success) {
-      resetToWelcome();
+      messagesEl.innerHTML = '';
+      if (welcomeScreen) welcomeScreen.style.display = 'flex';
       showToast('Chat history cleared ✓', 'success');
     }
   } catch (err) {
@@ -186,232 +184,219 @@ async function confirmClearHistory() {
   }
 }
 
-// ─── API: Health Check ────────────────────────────────
-async function checkAPIHealth() {
-  try {
-    const res = await fetch(`${API_BASE}/health`);
-    const data = await res.json();
-    setConnectionStatus(true, data.mongoStatus === 'Connected' ? 'Online · MongoDB Connected' : 'Online · DB Disconnected');
-  } catch {
-    setConnectionStatus(false, 'Backend offline');
-  }
-}
+// ── Message Builders ──────────────────────────────────────
+function appendUserMessage(text, timestamp, silent = false) {
+  const msgEl  = createMessageEl('user');
+  const bubble = msgEl.querySelector('.msg-bubble');
+  const timeEl = msgEl.querySelector('.msg-time');
 
-// ──────────────────────────────────────────────────────
-// DOM HELPERS
-// ──────────────────────────────────────────────────────
+  bubble.textContent = text;
+  timeEl.textContent = formatTime(timestamp);
 
-// Append a message bubble
-function appendMessage(role, text, time = new Date()) {
-  const isUser = role === 'user';
-  const msgEl  = document.createElement('div');
-  msgEl.className = `message ${isUser ? 'user-message' : 'ai-message'}`;
-
-  const avatarEl = document.createElement('div');
-  avatarEl.className = 'message-avatar';
-  avatarEl.textContent = isUser ? 'You' : '🤖';
-
-  const bodyEl = document.createElement('div');
-  bodyEl.className = 'message-body';
-
-  const roleEl = document.createElement('div');
-  roleEl.className = 'message-role';
-  roleEl.textContent = isUser ? 'You' : 'CareerBot';
-
-  const contentEl = document.createElement('div');
-  contentEl.className = 'message-content';
-
-  if (isUser) {
-    contentEl.textContent = text;
+  if (!silent) {
+    messagesEl.appendChild(msgEl);
+    scrollBottom();
   } else {
-    // Render markdown-like formatting for AI responses
-    contentEl.innerHTML = formatMarkdown(text);
+    messagesEl.appendChild(msgEl);
   }
-
-  const timeEl = document.createElement('div');
-  timeEl.className = 'message-time';
-  timeEl.textContent = formatTime(time);
-
-  bodyEl.appendChild(roleEl);
-  bodyEl.appendChild(contentEl);
-  bodyEl.appendChild(timeEl);
-
-  msgEl.appendChild(avatarEl);
-  msgEl.appendChild(bodyEl);
-  messagesContainer.appendChild(msgEl);
-
-  scrollToBottom();
-  return msgEl;
 }
 
-// Append typing indicator
-function appendTypingIndicator() {
-  const msgEl = document.createElement('div');
-  msgEl.className = 'message ai-message';
+function appendBotMessage(text, timestamp) {
+  const msgEl  = createMessageEl('bot');
+  const bubble = msgEl.querySelector('.msg-bubble');
+  const timeEl = msgEl.querySelector('.msg-time');
 
-  const avatarEl = document.createElement('div');
-  avatarEl.className = 'message-avatar';
-  avatarEl.textContent = '🤖';
+  bubble.innerHTML   = renderMarkdown(text);
+  timeEl.textContent = formatTime(timestamp);
 
-  const bodyEl = document.createElement('div');
-  bodyEl.className = 'message-body';
-
-  const roleEl = document.createElement('div');
-  roleEl.className = 'message-role';
-  roleEl.textContent = 'CareerBot';
-
-  const indicator = document.createElement('div');
-  indicator.className = 'typing-indicator';
-  indicator.innerHTML = `
-    <span class="typing-dot"></span>
-    <span class="typing-dot"></span>
-    <span class="typing-dot"></span>
-  `;
-
-  bodyEl.appendChild(roleEl);
-  bodyEl.appendChild(indicator);
-  msgEl.appendChild(avatarEl);
-  msgEl.appendChild(bodyEl);
-  messagesContainer.appendChild(msgEl);
-  scrollToBottom();
-  return msgEl;
+  messagesEl.appendChild(msgEl);
 }
 
-// Show chat area, hide welcome
-function showChatArea() {
-  welcomeScreen.style.display = 'none';
-  messagesContainer.classList.add('has-messages');
+function createMessageEl(role) {
+  const el = document.createElement('div');
+  el.className = `message ${role}`;
+
+  const avatar = role === 'user' ? '👤' : '⚡';
+  const name   = role === 'user' ? 'You' : 'CareerPath AI';
+
+  el.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div class="msg-body">
+      <div class="msg-name">${name}</div>
+      <div class="msg-bubble"></div>
+      <div class="msg-time">${formatTime()}</div>
+    </div>`;
+
+  return el;
 }
 
-// Reset to welcome screen
-function resetToWelcome() {
-  messagesContainer.innerHTML = '';
-  messagesContainer.classList.remove('has-messages');
-  welcomeScreen.style.display = '';
-}
+// ── Markdown Renderer ─────────────────────────────────────
+function renderMarkdown(text) {
+  let html = escapePartial(text);
 
-// Start a new chat (clears view only; doesn't delete DB)
-function startNewChat() {
-  messagesContainer.innerHTML = '';
-  messagesContainer.classList.remove('has-messages');
-  welcomeScreen.style.display = '';
-  userInput.value = '';
-  autoGrow(userInput);
-  sendBtn.disabled = true;
-}
+  // Code blocks (must come before inline code)
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code class="lang-${lang}">${escapeHtml(code.trim())}</code></pre>`
+  );
 
-// Auto-grow textarea height
-function autoGrow(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-}
-
-// Scroll chat to bottom
-function scrollToBottom(smooth = true) {
-  chatArea.scrollTo({
-    top: chatArea.scrollHeight,
-    behavior: smooth ? 'smooth' : 'auto',
-  });
-}
-
-// Set connection status indicator
-function setConnectionStatus(online, label) {
-  statusDot.className = 'status-dot ' + (online ? 'online' : 'offline');
-  connectionStatus.textContent = label;
-}
-
-// Close mobile sidebar
-function closeSidebar() {
-  sidebar.classList.remove('open');
-  sidebarOverlay.classList.remove('open');
-}
-
-// ─── Toast Notification ───────────────────────────────
-let toastTimer;
-function showToast(message, type = '') {
-  toast.textContent = message;
-  toast.className = `toast${type ? ' ' + type : ''} show`;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toast.classList.remove('show'); }, 3000);
-}
-
-// ──────────────────────────────────────────────────────
-// MARKDOWN FORMATTER
-// Converts Gemini markdown-style text to safe HTML
-// ──────────────────────────────────────────────────────
-function formatMarkdown(text) {
-  // Escape HTML first
-  let html = escapeHTML(text);
-
-  // Code blocks ```lang\n...\n```
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
-  });
-
-  // Inline code `code`
+  // Inline code
   html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
 
-  // Bold **text** or __text__
+  // Headings
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm,   '<h1>$1</h1>');
+
+  // Horizontal rule
+  html = html.replace(/^---$/gm, '<hr>');
+
+  // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
 
-  // Italic *text* or _text_
-  html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-  html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-  // Headings ## H2 and ### H3
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h2>$1</h2>');
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-  // Blockquote > text
-  html = html.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
-
-  // Unordered list: lines starting with - or *  or •
-  html = html.replace(/^[\-\*•]\s+(.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (match) => {
-    return '<ul>' + match + '</ul>';
+  // Unordered lists
+  html = html.replace(/^[\*\-] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>)/s, (match) => {
+    return match.replace(/(<li>[\s\S]*?<\/li>)/g, '$1');
   });
+  html = wrapLists(html, 'li', 'ul');
 
-  // Ordered list: lines starting with 1. 2. etc.
-  html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (match) => {
-    if (match.startsWith('<ul>')) return match;
-    return '<ol>' + match + '</ol>';
-  });
+  // Ordered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<oli>$1</oli>');
+  html = wrapLists(html, 'oli', 'ol').replace(/<oli>/g, '<li>').replace(/<\/oli>/g, '</li>');
 
-  // Horizontal rule ---
-  html = html.replace(/^---+$/gm, '<hr>');
-
-  // Paragraph breaks (double newline → paragraph)
-  html = html.replace(/\n\n+/g, '</p><p>');
-
-  // Single newlines → <br> (outside block elements)
-  html = html.replace(/\n/g, '<br>');
-
-  // Wrap in paragraph
-  html = '<p>' + html + '</p>';
-
-  // Clean up empty paragraphs and around block elements
-  html = html
-    .replace(/<p>\s*<\/p>/g, '')
-    .replace(/<p>(<(?:h[123]|ul|ol|pre|blockquote|hr)[^>]*>)/g, '$1')
-    .replace(/(<\/(?:h[123]|ul|ol|pre|blockquote)>)<\/p>/g, '$1');
+  // Paragraphs (lines not already wrapped)
+  html = html.split('\n').map(line => {
+    line = line.trim();
+    if (!line) return '';
+    if (/^<(h[1-3]|ul|ol|li|pre|hr|blockquote)/.test(line)) return line;
+    return `<p>${line}</p>`;
+  }).join('\n');
 
   return html;
 }
 
-// Safely escape HTML to prevent XSS
-function escapeHTML(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+function wrapLists(html, tag, wrapper) {
+  const openTag  = `<${tag}>`;
+  const closeTag = `</${tag}>`;
+  const openW    = `<${wrapper}>`;
+  const closeW   = `</${wrapper}>`;
+
+  return html.replace(new RegExp(`(${openTag}[\\s\\S]*?${closeTag}\\n?)+`, 'g'),
+    match => `${openW}${match}${closeW}`);
 }
 
-// Format timestamp
-function formatTime(date) {
-  return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+function escapePartial(str) {
+  // Only escape < and > outside of code blocks we'll wrap
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Helpers ───────────────────────────────────────────────
+function scrollBottom() {
+  requestAnimationFrame(() => {
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  });
+}
+
+function formatTime(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function setStatus(state) {
+  dotEl.className = 'dot';
+  const map = {
+    connecting: ['', 'Connecting...'],
+    connected:  ['connected', 'Connected'],
+    error:      ['error', 'Reconnecting...']
+  };
+  const [cls, txt] = map[state] || ['', 'Unknown'];
+  if (cls) dotEl.classList.add(cls);
+  statusText.textContent = txt;
+}
+
+let toastTimer;
+function showToast(msg, type = '') {
+  toast.textContent = msg;
+  toast.className   = `toast ${type} show`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+// ── Public function for welcome cards ─────────────────────
+function askQuestion(q) {
+  userInput.value = q;
+  sendMessage();
+}
+
+// ── Events ────────────────────────────────────────────────
+
+// Send on button click
+sendBtn.addEventListener('click', sendMessage);
+
+// Send on Enter (Shift+Enter = new line)
+userInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// Auto-resize textarea
+userInput.addEventListener('input', () => {
+  userInput.style.height = 'auto';
+  userInput.style.height = Math.min(userInput.scrollHeight, 140) + 'px';
+});
+
+// Clear history
+clearBtn.addEventListener('click', clearHistory);
+
+// Sidebar toggle (desktop)
+sidebarToggle.addEventListener('click', () => {
+  sidebar.classList.toggle('collapsed');
+});
+
+// Mobile menu
+menuBtn.addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  if (sidebar.classList.contains('open')) {
+    overlay = document.createElement('div');
+    overlay.className = 'sidebar-overlay';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', closeMobileSidebar);
+  } else {
+    closeMobileSidebar();
+  }
+});
+
+function closeMobileSidebar() {
+  sidebar.classList.remove('open');
+  if (overlay) {
+    overlay.remove();
+    overlay = null;
+  }
+}
+
+// Quick question buttons in sidebar
+document.getElementById('quickBtns').addEventListener('click', (e) => {
+  const btn = e.target.closest('.quick-btn');
+  if (!btn) return;
+  const q = btn.dataset.q;
+  if (q) {
+    userInput.value = q;
+    sendMessage();
+    closeMobileSidebar();
+  }
+});
+
+// ── Init ───────────────────────────────────────────────────
+connectWS();
