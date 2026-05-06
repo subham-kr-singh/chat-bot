@@ -1,21 +1,19 @@
 /* ══════════════════════════════════════════════════════
    CareerBot — Frontend JavaScript
-   B.Tech CSE Career Guidance Chatbot
+   Connects to: https://chat-bot-pd7n.onrender.com
    ══════════════════════════════════════════════════════ */
 
 "use strict";
 
 // ─── Configuration ────────────────────────────────────
-const API_BASE = "http://localhost:5000/api" || "https://chat-bot-pd7n.onrender.com";
-const SESSION_ID =
-  "session_" +
-  (localStorage.getItem("careerbotSessionId") || generateSessionId());
+const BACKEND_HTTP = "https://chat-bot-pd7n.onrender.com";
+const BACKEND_WS = "wss://chat-bot-pd7n.onrender.com";
 
-function generateSessionId() {
-  const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  localStorage.setItem("careerbotSessionId", id);
-  return id;
-}
+const API = {
+  CHAT: `${BACKEND_HTTP}/api/chat`,
+  HISTORY: `${BACKEND_HTTP}/api/chat/history`,
+  HEALTH: `${BACKEND_HTTP}/api/health`,
+};
 
 // ─── DOM References ───────────────────────────────────
 const chatArea = document.getElementById("chatArea");
@@ -33,23 +31,23 @@ const connectionStatus = document.getElementById("connectionStatus");
 const toast = document.getElementById("toast");
 
 // ─── State ────────────────────────────────────────────
-let isLoading = false;
+let ws = null;
+let isStreaming = false;
+let wsReconnectTimer = null;
+let currentBotEl = null; // .message-content div being streamed into
+let currentBotRaw = ""; // accumulated markdown during stream
 
 // ══════════════════════════════════════════════════════
-// INITIALIZATION
+// INIT
 // ══════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded", () => {
-  checkAPIHealth();
-  loadChatHistory();
+  connectWebSocket();
   bindEvents();
 });
 
-// ─── Bind All Event Listeners ─────────────────────────
 function bindEvents() {
-  // Send on button click
   sendBtn.addEventListener("click", handleSend);
 
-  // Send on Enter (Shift+Enter = newline)
   userInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -57,249 +55,274 @@ function bindEvents() {
     }
   });
 
-  // Auto-grow textarea and toggle send button
   userInput.addEventListener("input", () => {
     autoGrow(userInput);
-    sendBtn.disabled = userInput.value.trim() === "" || isLoading;
+    sendBtn.disabled = userInput.value.trim() === "" || isStreaming;
   });
 
-  // New Chat
   newChatBtn.addEventListener("click", () => {
     startNewChat();
     closeSidebar();
   });
+  clearChatBtn.addEventListener("click", confirmClearHistory);
 
-  // Clear History
-  clearChatBtn.addEventListener("click", () => confirmClearHistory());
-
-  // Mobile sidebar
   menuToggle.addEventListener("click", () => {
     sidebar.classList.toggle("open");
     sidebarOverlay.classList.toggle("open");
   });
   sidebarOverlay.addEventListener("click", closeSidebar);
 
-  // Suggestion cards (welcome screen)
   document.querySelectorAll(".suggestion-card, .topic-btn").forEach((el) => {
     el.addEventListener("click", () => {
       const prompt = el.dataset.prompt;
-      if (prompt) {
-        userInput.value = prompt;
-        autoGrow(userInput);
-        sendBtn.disabled = false;
-        closeSidebar();
-        handleSend();
-      }
+      if (!prompt) return;
+      userInput.value = prompt;
+      autoGrow(userInput);
+      sendBtn.disabled = false;
+      closeSidebar();
+      handleSend();
     });
   });
 }
 
-// ──────────────────────────────────────────────────────
-// SEND MESSAGE FLOW
-// ──────────────────────────────────────────────────────
-async function handleSend() {
-  const text = userInput.value.trim();
-  if (!text || isLoading) return;
+// ══════════════════════════════════════════════════════
+// WEBSOCKET
+// ══════════════════════════════════════════════════════
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  // Clear input immediately
+  setStatus("connecting", "Connecting\u2026");
+  ws = new WebSocket(BACKEND_WS);
+
+  ws.onopen = () => {
+    setStatus("online", "Online");
+    clearTimeout(wsReconnectTimer);
+    loadHistory();
+  };
+
+  ws.onclose = () => {
+    setStatus("offline", "Reconnecting\u2026");
+    wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+  };
+
+  ws.onerror = () => setStatus("offline", "Connection error");
+
+  ws.onmessage = (e) => handleWSMessage(JSON.parse(e.data));
+}
+
+function handleWSMessage(data) {
+  switch (data.type) {
+    case "start":
+      onStreamStart();
+      break;
+    case "chunk":
+      onStreamChunk(data.content);
+      break;
+    case "done":
+      onStreamDone();
+      break;
+    case "error":
+      onStreamError(data.message);
+      break;
+  }
+}
+
+function onStreamStart() {
+  isStreaming = true;
+  sendBtn.disabled = true;
+  showChatArea();
+
+  const msgEl = createMessageShell("ai");
+  const contentEl = msgEl.querySelector(".message-content");
+  contentEl.innerHTML = typingHTML();
+  messagesContainer.appendChild(msgEl);
+  scrollToBottom();
+
+  currentBotEl = contentEl;
+  currentBotRaw = "";
+}
+
+function onStreamChunk(text) {
+  if (!currentBotEl) return;
+  currentBotRaw += text;
+  currentBotEl.innerHTML =
+    formatMarkdown(currentBotRaw) + '<span class="stream-cursor">|</span>';
+  scrollToBottom();
+}
+
+function onStreamDone() {
+  if (currentBotEl) currentBotEl.innerHTML = formatMarkdown(currentBotRaw);
+  currentBotEl = null;
+  currentBotRaw = "";
+  isStreaming = false;
+  sendBtn.disabled = userInput.value.trim() === "";
+  scrollToBottom();
+}
+
+function onStreamError(message) {
+  if (currentBotEl)
+    currentBotEl.innerHTML = `<span style="color:#f87171">⚠️ ${message || "Something went wrong."}</span>`;
+  currentBotEl = null;
+  currentBotRaw = "";
+  isStreaming = false;
+  sendBtn.disabled = false;
+  showToast(message || "AI response failed", "error");
+}
+
+// ══════════════════════════════════════════════════════
+// SEND
+// ══════════════════════════════════════════════════════
+function handleSend() {
+  const text = userInput.value.trim();
+  if (!text || isStreaming) return;
+
   userInput.value = "";
   autoGrow(userInput);
   sendBtn.disabled = true;
 
-  // Show chat area, hide welcome
   showChatArea();
+  appendUserMessage(text);
 
-  // Render user message
-  appendMessage("user", text);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    // WS path — backend socketHandler.js reads parsed.question
+    ws.send(JSON.stringify({ question: text }));
+  } else {
+    // REST fallback
+    sendViaREST(text);
+  }
+}
 
-  // Show typing indicator
+// ─── REST fallback (no streaming) ────────────────────
+async function sendViaREST(question) {
   const typingEl = appendTypingIndicator();
-
-  isLoading = true;
+  isStreaming = true;
 
   try {
-    const data = await sendChatRequest(text);
+    const res = await fetch(API.CHAT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // chatController.js: const { question } = req.body
+      body: JSON.stringify({ question }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
     typingEl.remove();
-    appendMessage("ai", data.reply);
+    // Backend returns: { success, data: { id, question, answer, createdAt } }
+    appendBotMessage(data.data.answer);
   } catch (err) {
-    const errorMessage = err.message || "Could not reach the server.";
-    appendMessage("ai", `⚠️ **Error:** ${errorMessage}`);
-    showToast(errorMessage, "error");
+    typingEl.remove();
+    appendBotMessage(`⚠️ **Error:** ${err.message}`);
+    showToast(err.message, "error");
   } finally {
-    isLoading = false;
+    isStreaming = false;
     sendBtn.disabled = userInput.value.trim() === "";
     scrollToBottom();
   }
 }
 
-// ─── API: Send Chat ───────────────────────────────────
-async function sendChatRequest(message) {
-  const response = await fetch(`${API_BASE}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, sessionId: SESSION_ID }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.details || data.error || `HTTP ${response.status}`);
-  }
-  return data;
-}
-
-// ─── API: Load Chat History ───────────────────────────
-async function loadChatHistory() {
+// ══════════════════════════════════════════════════════
+// HISTORY
+// GET /api/chat/history → { success, count, data: [{question,answer,createdAt}] }
+// ══════════════════════════════════════════════════════
+async function loadHistory() {
   try {
-    const response = await fetch(
-      `${API_BASE}/chat/history?sessionId=${SESSION_ID}&limit=40`,
-    );
-    if (!response.ok) return;
+    const res = await fetch(API.HISTORY);
+    const data = await res.json();
 
-    const data = await response.json();
-    if (data.chats && data.chats.length > 0) {
+    if (data.success && data.data && data.data.length > 0) {
       showChatArea();
-      data.chats.forEach((chat) => {
-        appendMessage("user", chat.question, new Date(chat.createdAt));
-        appendMessage("ai", chat.answer, new Date(chat.createdAt));
+      // Backend returns newest-first; reverse to display oldest first
+      [...data.data].reverse().forEach(({ question, answer, createdAt }) => {
+        appendUserMessage(question, new Date(createdAt));
+        appendBotMessage(answer, new Date(createdAt));
       });
       scrollToBottom(false);
     }
   } catch (err) {
-    // Silently ignore; backend may not be running yet
-    console.warn("Could not load history:", err.message);
+    console.warn("History load failed:", err.message);
   }
 }
 
-// ─── API: Clear History ───────────────────────────────
+// DELETE /api/chat/history → { success, message }
 async function confirmClearHistory() {
   if (!confirm("Clear all chat history? This cannot be undone.")) return;
   try {
-    const response = await fetch(`${API_BASE}/chat/clear`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: SESSION_ID }),
-    });
-    const data = await response.json();
+    const res = await fetch(API.HISTORY, { method: "DELETE" });
+    const data = await res.json();
     if (data.success) {
       resetToWelcome();
       showToast("Chat history cleared ✓", "success");
+    } else {
+      showToast("Could not clear history", "error");
     }
-  } catch (err) {
+  } catch {
     showToast("Failed to clear history", "error");
   }
 }
 
-// ─── API: Health Check ────────────────────────────────
-async function checkAPIHealth() {
-  try {
-    const res = await fetch(`${API_BASE}/health`);
-    const data = await res.json();
-    setConnectionStatus(
-      true,
-      data.mongoStatus === "Connected"
-        ? "Online · MongoDB Connected"
-        : "Online · DB Disconnected",
-    );
-  } catch {
-    setConnectionStatus(false, "Backend offline");
-  }
-}
-
-// ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════
 // DOM HELPERS
-// ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════
+function appendUserMessage(text, time = new Date()) {
+  const el = createMessageShell("user");
+  el.querySelector(".message-content").textContent = text;
+  el.querySelector(".message-time").textContent = formatTime(time);
+  messagesContainer.appendChild(el);
+  scrollToBottom();
+}
 
-// Append a message bubble
-function appendMessage(role, text, time = new Date()) {
+function appendBotMessage(text, time = new Date()) {
+  const el = createMessageShell("ai");
+  el.querySelector(".message-content").innerHTML = formatMarkdown(text);
+  el.querySelector(".message-time").textContent = formatTime(time);
+  messagesContainer.appendChild(el);
+  scrollToBottom();
+}
+
+function createMessageShell(role) {
   const isUser = role === "user";
-  const msgEl = document.createElement("div");
-  msgEl.className = `message ${isUser ? "user-message" : "ai-message"}`;
-
-  const avatarEl = document.createElement("div");
-  avatarEl.className = "message-avatar";
-  avatarEl.textContent = isUser ? "You" : "🤖";
-
-  const bodyEl = document.createElement("div");
-  bodyEl.className = "message-body";
-
-  const roleEl = document.createElement("div");
-  roleEl.className = "message-role";
-  roleEl.textContent = isUser ? "You" : "CareerBot";
-
-  const contentEl = document.createElement("div");
-  contentEl.className = "message-content";
-
-  if (isUser) {
-    contentEl.textContent = text;
-  } else {
-    // Render markdown-like formatting for AI responses
-    contentEl.innerHTML = formatMarkdown(text);
-  }
-
-  const timeEl = document.createElement("div");
-  timeEl.className = "message-time";
-  timeEl.textContent = formatTime(time);
-
-  bodyEl.appendChild(roleEl);
-  bodyEl.appendChild(contentEl);
-  bodyEl.appendChild(timeEl);
-
-  msgEl.appendChild(avatarEl);
-  msgEl.appendChild(bodyEl);
-  messagesContainer.appendChild(msgEl);
-
-  scrollToBottom();
-  return msgEl;
+  const el = document.createElement("div");
+  el.className = `message ${isUser ? "user-message" : "ai-message"}`;
+  el.innerHTML = `
+    <div class="message-avatar">${isUser ? "You" : "🤖"}</div>
+    <div class="message-body">
+      <div class="message-role">${isUser ? "You" : "CareerBot"}</div>
+      <div class="message-content"></div>
+      <div class="message-time">${formatTime()}</div>
+    </div>`;
+  return el;
 }
 
-// Append typing indicator
 function appendTypingIndicator() {
-  const msgEl = document.createElement("div");
-  msgEl.className = "message ai-message";
-
-  const avatarEl = document.createElement("div");
-  avatarEl.className = "message-avatar";
-  avatarEl.textContent = "🤖";
-
-  const bodyEl = document.createElement("div");
-  bodyEl.className = "message-body";
-
-  const roleEl = document.createElement("div");
-  roleEl.className = "message-role";
-  roleEl.textContent = "CareerBot";
-
-  const indicator = document.createElement("div");
-  indicator.className = "typing-indicator";
-  indicator.innerHTML = `
-    <span class="typing-dot"></span>
-    <span class="typing-dot"></span>
-    <span class="typing-dot"></span>
-  `;
-
-  bodyEl.appendChild(roleEl);
-  bodyEl.appendChild(indicator);
-  msgEl.appendChild(avatarEl);
-  msgEl.appendChild(bodyEl);
-  messagesContainer.appendChild(msgEl);
+  const el = createMessageShell("ai");
+  el.querySelector(".message-content").innerHTML = typingHTML();
+  messagesContainer.appendChild(el);
   scrollToBottom();
-  return msgEl;
+  return el;
 }
 
-// Show chat area, hide welcome
+function typingHTML() {
+  return `<div class="typing-indicator">
+    <span class="typing-dot"></span>
+    <span class="typing-dot"></span>
+    <span class="typing-dot"></span>
+  </div>`;
+}
+
+// ─── UI state ─────────────────────────────────────────
 function showChatArea() {
   welcomeScreen.style.display = "none";
   messagesContainer.classList.add("has-messages");
 }
 
-// Reset to welcome screen
 function resetToWelcome() {
   messagesContainer.innerHTML = "";
   messagesContainer.classList.remove("has-messages");
   welcomeScreen.style.display = "";
 }
 
-// Start a new chat (clears view only; doesn't delete DB)
 function startNewChat() {
   messagesContainer.innerHTML = "";
   messagesContainer.classList.remove("has-messages");
@@ -309,13 +332,22 @@ function startNewChat() {
   sendBtn.disabled = true;
 }
 
-// Auto-grow textarea height
+function setStatus(state, label) {
+  statusDot.className =
+    "status-dot " + (state === "online" ? "online" : "offline");
+  connectionStatus.textContent = label;
+}
+
+function closeSidebar() {
+  sidebar.classList.remove("open");
+  sidebarOverlay.classList.remove("open");
+}
+
 function autoGrow(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
-// Scroll chat to bottom
 function scrollToBottom(smooth = true) {
   chatArea.scrollTo({
     top: chatArea.scrollHeight,
@@ -323,93 +355,66 @@ function scrollToBottom(smooth = true) {
   });
 }
 
-// Set connection status indicator
-function setConnectionStatus(online, label) {
-  statusDot.className = "status-dot " + (online ? "online" : "offline");
-  connectionStatus.textContent = label;
-}
-
-// Close mobile sidebar
-function closeSidebar() {
-  sidebar.classList.remove("open");
-  sidebarOverlay.classList.remove("open");
-}
-
-// ─── Toast Notification ───────────────────────────────
 let toastTimer;
-function showToast(message, type = "") {
-  toast.textContent = message;
+function showToast(msg, type = "") {
+  toast.textContent = msg;
   toast.className = `toast${type ? " " + type : ""} show`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.remove("show");
-  }, 3000);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 3500);
 }
 
-// ──────────────────────────────────────────────────────
-// MARKDOWN FORMATTER
-// Converts Gemini markdown-style text to safe HTML
-// ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════
+// MARKDOWN RENDERER
+// ══════════════════════════════════════════════════════
 function formatMarkdown(text) {
-  // Escape HTML first
   let html = escapeHTML(text);
 
-  // Code blocks ```lang\n...\n```
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
-  });
+  // Fenced code blocks
+  html = html.replace(
+    /```(\w*)\n?([\s\S]*?)```/g,
+    (_, lang, code) =>
+      `<pre><code class="language-${lang}">${code.trim()}</code></pre>`,
+  );
 
-  // Inline code `code`
+  // Inline code
   html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
 
-  // Bold **text** or __text__
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/__(.+?)__/g, "<strong>$1</strong>");
-
-  // Italic *text* or _text_
-  html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-  html = html.replace(/_([^_\n]+)_/g, "<em>$1</em>");
-
-  // Headings ## H2 and ### H3
+  // Headings
   html = html.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
   html = html.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
   html = html.replace(/^#\s+(.+)$/gm, "<h2>$1</h2>");
 
-  // Blockquote > text
-  html = html.replace(/^&gt;\s+(.+)$/gm, "<blockquote>$1</blockquote>");
+  // Bold / italic
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
 
-  // Unordered list: lines starting with - or *  or •
-  html = html.replace(/^[\-\*•]\s+(.+)$/gm, "<li>$1</li>");
-  html = html.replace(
-    /(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g,
-    (match) => {
-      return "<ul>" + match + "</ul>";
-    },
-  );
-
-  // Ordered list: lines starting with 1. 2. etc.
-  html = html.replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>");
-  html = html.replace(
-    /(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g,
-    (match) => {
-      if (match.startsWith("<ul>")) return match;
-      return "<ol>" + match + "</ol>";
-    },
-  );
-
-  // Horizontal rule ---
+  // Horizontal rule
   html = html.replace(/^---+$/gm, "<hr>");
 
-  // Paragraph breaks (double newline → paragraph)
+  // Blockquote
+  html = html.replace(/^&gt;\s+(.+)$/gm, "<blockquote>$1</blockquote>");
+
+  // Unordered list items
+  html = html.replace(/^[\-\*•]\s+(.+)$/gm, "<li>$1</li>");
+
+  // Ordered list items
+  html = html.replace(/^\d+\.\s+(.+)$/gm, "<oli>$1</oli>");
+
+  // Wrap <li> runs in <ul>
+  html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+
+  // Wrap <oli> runs in <ol>
+  html = html.replace(
+    /(<oli>[\s\S]*?<\/oli>\n?)+/g,
+    (m) => `<ol>${m.replace(/<\/?oli>/g, (t) => t.replace("oli", "li"))}</ol>`,
+  );
+
+  // Paragraphs
   html = html.replace(/\n\n+/g, "</p><p>");
-
-  // Single newlines → <br> (outside block elements)
   html = html.replace(/\n/g, "<br>");
+  html = `<p>${html}</p>`;
 
-  // Wrap in paragraph
-  html = "<p>" + html + "</p>";
-
-  // Clean up empty paragraphs and around block elements
+  // Clean up empty tags + unwrap block elements from <p>
   html = html
     .replace(/<p>\s*<\/p>/g, "")
     .replace(/<p>(<(?:h[123]|ul|ol|pre|blockquote|hr)[^>]*>)/g, "$1")
@@ -418,7 +423,6 @@ function formatMarkdown(text) {
   return html;
 }
 
-// Safely escape HTML to prevent XSS
 function escapeHTML(str) {
   return str
     .replace(/&/g, "&amp;")
@@ -428,8 +432,7 @@ function escapeHTML(str) {
     .replace(/'/g, "&#39;");
 }
 
-// Format timestamp
-function formatTime(date) {
+function formatTime(date = new Date()) {
   return date.toLocaleTimeString("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
