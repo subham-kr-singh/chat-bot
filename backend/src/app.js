@@ -7,14 +7,37 @@ const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
-// ── Middleware ───────────────────────────────────────────
-app.use(cors());
+// ── CORS ─────────────────────────────────────────────────
+// Explicitly allow the deployed frontend + common local origins
+const ALLOWED_ORIGINS = [
+  "https://chat-bot-1-c216.onrender.com", // production frontend
+  "http://localhost:3000", // local CRA / Vite
+  "http://localhost:5000", // local full-stack
+  "http://127.0.0.1:5500", // VS Code Live Server
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no Origin header (Postman, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS blocked: origin "${origin}" is not allowed`));
+    },
+    methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  }),
+);
+
+// ── Body Parser ───────────────────────────────────────────
 app.use(express.json());
 
-// Serve frontend statically (backend/src → backend → project root → frontend)
-app.use(express.static(path.join(__dirname, "../../frontend")));
+// ── Static Frontend ───────────────────────────────────────
+// Serves frontend/index.html when backend and frontend share the same server
+app.use(express.static(path.join(__dirname, "../frontend")));
 
-// ── API Routes ───────────────────────────────────────────
+// ── API Routes ────────────────────────────────────────────
 app.use("/api/chat", chatRoutes);
 
 // Health check
@@ -26,9 +49,9 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Catch-all → serve frontend SPA
+// Catch-all → SPA fallback
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../../frontend", "index.html"));
+  res.sendFile(path.join(__dirname, "../frontend", "index.html"));
 });
 
 // Global error handler (must be last)
