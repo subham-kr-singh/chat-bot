@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Career Mentor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="chat-header">
+            <div class="header-info">
+                <div class="ai-avatar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a2 2 0 0 1 2 2c-.11.66-.54 1.25-1.16 1.57A3.99 3.99 0 0 0 16 9v2h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2v2c0 1.66-1.34 3-3 3H9c-1.66 0-3-1.34-3-3v-2H4a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2h2V9a3.99 3.99 0 0 0 3.16-3.43C8.54 5.25 8.11 4.66 8 4a2 2 0 0 1 2-2h2z"></path>
+                        <circle cx="9" cy="13" r="1"></circle>
+                        <circle cx="15" cy="13" r="1"></circle>
+                        <path d="M10 17h4"></path>
+                    </svg>
+                </div>
+                <h1>AI Career Mentor</h1>
+            </div>
+            <button id="clear-chat-btn" class="icon-btn" aria-label="Clear Chat" title="Clear Chat">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                </svg>
+            </button>
+        </header>
+
+        <!-- Chat Arena -->
+        <main id="chat-arena" class="chat-arena" aria-live="polite">
+            <!-- Initial Greeting -->
+            <div class="message bot-message">
+                <div class="message-content">
+                    Hello! I'm your AI Career Mentor. I can help you with your B.Tech journey, roadmaps, interview prep, and DSA concepts. How can I assist you today?
+                </div>
+            </div>
+        </main>
+
+        <!-- Input Area Container -->
+        <div class="input-area-container">
+            <!-- Suggested Prompts -->
+            <div class="suggested-prompts-wrapper">
+                <div class="suggested-prompts" id="suggested-prompts">
+                    <button class="prompt-pill">Web Dev Roadmap</button>
+                    <button class="prompt-pill">How to start DSA?</button>
+                    <button class="prompt-pill">Resume Tips for Freshers</button>
+                    <button class="prompt-pill">Top Tech Stack 2024</button>
+                    <button class="prompt-pill">Mock Interview questions</button>
+                </div>
+            </div>
+
+            <!-- Input Box -->
+            <div class="input-wrapper">
+                <textarea id="chat-input" rows="1" placeholder="Ask anything about your career..." aria-label="Message input"></textarea>
+                <button id="send-btn" class="send-btn" aria-label="Send message">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <template id="typing-indicator-template">
+        <div class="message bot-message typing-indicator-wrapper">
+            <div class="message-content typing-indicator">
+                <span></span><span></span><span></span>
+            </div>
+        </div>
+    </template>
+
+    <script src="script.js"></script>
+</body>
+</html>
