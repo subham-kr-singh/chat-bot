@@ -13,7 +13,7 @@ const getGeminiClient = () => {
 };
 
 const getModel = () => {
-  return getGeminiClient().getGenerativeModel({ model: 'gemini-1.5-flash' });
+  return getGeminiClient().getGenerativeModel({ model: 'gemini-2.5-flash' });
 };
 
 module.exports = { getGeminiClient, getModel };
