@@ -93,46 +93,24 @@ const generateResponse = async (question) => {
 /**
  * Generate a streaming AI response (WebSocket path).
  *
- * Implemented as an async GENERATOR so that Gemini's chunk iteration
- * happens INSIDE this function — any "Failed to parse stream" or other
- * mid-stream error is caught here and Grok takes over seamlessly before
- * any broken data reaches the socket handler.
+ * STREAMING PRIORITY (Render-safe):
+ *   1. Grok (Groq) native stream  — reliable on Render's proxy/HTTP stack
+ *   2. Gemini non-stream simulated — uses the stable REST API, then slices
+ *      the full response into small chunks to preserve real-time UX.
+ *      This completely avoids the Render HTTP/2 "Failed to parse stream" bug.
  *
- * Yields objects with a .text() method (Gemini-compatible shape).
- * socketHandler.js: `const stream = await generateStreamResponse(q)`
- * still works because awaiting a non-Promise returns it as-is.
+ * Yields { text: () => string } — Gemini-compatible shape, zero changes
+ * needed in socketHandler.js.
  *
  * @param {string} question
  * @returns {AsyncGenerator<{ text: () => string }>}
  */
 async function* generateStreamResponse(question) {
   const prompt = `${SYSTEM_INSTRUCTION}\n\nStudent Question: ${question}`;
-  let chunksEmitted = 0;
 
-  // ── Try Gemini streaming ─────────────────────────────────────────────────
-  // Wrap the for-await in try-catch so "Failed to parse stream" (Render
-  // proxy / HTTP-2 issue) is caught HERE, not in socketHandler.
+  // ── 1. Grok native streaming (primary) ───────────────────────────────────
   try {
-    console.log('🤖 Trying Gemini (stream)…');
-    const geminiStream = await smartGenerateStream(prompt);
-
-    for await (const chunk of geminiStream) {
-      chunksEmitted++;
-      yield chunk; // already has .text() → compatible with socketHandler
-    }
-    return; // ← Gemini finished cleanly, we're done
-  } catch (geminiErr) {
-    console.warn(
-      `⚠️  Gemini stream failed after ${chunksEmitted} chunk(s): ${geminiErr.message}`
-    );
-    // If we already pushed partial content, re-throw — the client already
-    // has part of the answer and we can't cleanly restart from Grok.
-    if (chunksEmitted > 0) throw geminiErr;
-  }
-
-  // ── Grok stream fallback (only reached when 0 Gemini chunks emitted) ────
-  try {
-    console.log('🤖 Grok stream fallback…');
+    console.log('🤖 Trying Grok (stream)…');
     const client = getGrokClient();
     const grokStream = await client.chat.completions.create({
       model: GROK_MODEL,
@@ -150,10 +128,33 @@ async function* generateStreamResponse(question) {
       yield { text: () => content };
     }
     console.log('✅ Grok stream completed');
+    return; // ← done
   } catch (grokErr) {
     console.warn(`⚠️  Grok stream failed: ${grokErr.message}`);
-    throw new Error('All AI providers failed to produce a stream response.');
   }
+
+  // ── 2. Gemini non-stream → simulated streaming (fallback) ────────────────
+  // Uses smartGenerate (REST, no SSE) so Render's proxy can never break the
+  // stream mid-way. The full text is sliced into ~40-char chunks to keep the
+  // typing animation alive in the frontend.
+  try {
+    console.log('🤖 Gemini non-stream fallback (simulated streaming)…');
+    const { text, modelUsed } = await smartGenerate(prompt);
+    console.log(`✅ Gemini [${modelUsed}] responded — simulating stream…`);
+
+    const CHUNK_SIZE = 40; // characters per simulated chunk
+    for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+      const slice = text.slice(i, i + CHUNK_SIZE);
+      yield { text: () => slice };
+      // Small async pause so the event loop can flush each chunk to the socket
+      await new Promise((r) => setImmediate(r));
+    }
+    return;
+  } catch (geminiErr) {
+    console.warn(`⚠️  Gemini fallback failed: ${geminiErr.message}`);
+  }
+
+  throw new Error('All AI providers failed to produce a stream response.');
 }
 
 module.exports = { generateResponse, generateStreamResponse };

@@ -16,10 +16,10 @@ const getGeminiClient = () => {
 // ── Model priority list (fastest/newest → stable → legacy) ───────────────────
 // NOTE: Gemini versions go up to 2.x as of 2025. There is NO gemini-3.x.
 const MODEL_PRIORITY = [
-  'gemini-2.5-flash',   // newest & fastest — try first
-  'gemini-2.5-pro',     // more powerful, higher quota usage
-  'gemini-2.0-flash',   // stable GA fallback
-  'gemini-1.5-flash',   // legacy safety net
+  'gemini-2.5-flash',     // newest & fastest — try first
+  'gemini-2.5-pro',       // more powerful, higher quota usage
+  'gemini-2.0-flash',     // stable GA fallback
+  'gemini-2.0-flash-lite',// lightweight safety net (replaces 1.5-flash which is 404 on v1beta)
 ];
 
 /**
