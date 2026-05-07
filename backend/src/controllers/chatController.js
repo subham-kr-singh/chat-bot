@@ -1,9 +1,10 @@
-const { generateResponse } = require('../services/geminiService');
+const { generateResponse } = require('../services/aiService');
 const { saveChat, getHistory, clearHistory } = require('../services/chatService');
 
 /**
  * POST /api/chat
  * Receives a question, gets AI response, saves to DB, returns result.
+ * Falls back across providers automatically (Gemini → Grok).
  */
 const sendMessage = async (req, res) => {
   const { question } = req.body;
@@ -15,11 +16,12 @@ const sendMessage = async (req, res) => {
     });
   }
 
-  const answer = await generateResponse(question.trim());
-  const chat = await saveChat(question.trim(), answer);
+  const { text, provider } = await generateResponse(question.trim());
+  const chat = await saveChat(question.trim(), text);
 
   res.status(201).json({
     success: true,
+    provider,                   // which AI model actually answered
     data: {
       id: chat._id,
       question: chat.question,

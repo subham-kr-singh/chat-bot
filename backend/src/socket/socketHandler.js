@@ -1,5 +1,5 @@
 const { WebSocketServer } = require('ws');
-const { generateStreamResponse } = require('../services/geminiService');
+const { generateStreamResponse } = require('../services/aiService');
 const { saveChat } = require('../services/chatService');
 
 /**
