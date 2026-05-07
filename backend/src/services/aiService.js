@@ -1,4 +1,4 @@
-const { getModel } = require('../config/gemini');
+const { smartGenerate, smartGenerateStream } = require('../config/gemini');
 const { getGrokClient } = require('../config/grok');
 
 // ── System prompt (shared across all models) ─────────────────────────────────
@@ -29,14 +29,14 @@ const GROK_MODEL = 'llama-3.3-70b-versatile';
 
 /**
  * Try Gemini (non-streaming).
+ * Uses smartGenerate which auto-falls-back across Gemini models on 503/429.
  * @param {string} question
  * @returns {Promise<string>}
  */
 const tryGemini = async (question) => {
-  const model = getModel();
   const prompt = `${SYSTEM_INSTRUCTION}\n\nStudent Question: ${question}`;
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+  const { text } = await smartGenerate(prompt);
+  return text;
 };
 
 /**
@@ -103,14 +103,11 @@ const generateResponse = async (question) => {
  * @returns {Promise<AsyncIterable<{ text: () => string }>>}
  */
 const generateStreamResponse = async (question) => {
-  // ── Try Gemini streaming ────────────────────────────────────────────────
+  // ── Try Gemini streaming (with internal model fallback) ─────────────────
   try {
     console.log('🤖 Trying Gemini (stream)…');
-    const model = getModel();
     const prompt = `${SYSTEM_INSTRUCTION}\n\nStudent Question: ${question}`;
-    const result = await model.generateContentStream(prompt);
-    console.log('✅ Streaming from Gemini');
-    return result.stream; // native Gemini async iterable
+    return await smartGenerateStream(prompt); // handles 503/429 across models
   } catch (geminiErr) {
     console.warn(`⚠️  Gemini stream failed: ${geminiErr.message}`);
   }
